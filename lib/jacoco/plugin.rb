@@ -1,19 +1,37 @@
+# frozen_string_literal: true
+
 require 'jacoco/sax_parser'
 
 module Danger
+  # Verify code coverage inside your projects
+  # This is done using the jacoco output
+  # Results are passed out as a table in markdown
+  #
+  # @example Verify coverage
+  #          jacoco.minimum_project_coverage_percentage = 50
+  #
+  # @example Verify coverage per package
+  #          jacoco.minimum_package_coverage_map = { # optional (default is empty)
+  #           'com/package/' => 55,
+  #           'com/package/more/specific/' => 15
+  #          }
   #
   # @see  Anton Malinskiy/danger-jacoco
   # @tags jacoco, coverage, java, android, kotlin
   #
-  class DangerJacoco < Plugin
+  class DangerJacoco < Plugin # rubocop:disable Metrics/ClassLength
     attr_accessor :minimum_project_coverage_percentage
     attr_accessor :minimum_class_coverage_percentage
     attr_accessor :files_extension
+    attr_accessor :minimum_package_coverage_map
     attr_accessor :minimum_class_coverage_map
+    attr_accessor :fail_no_coverage_data_found
 
+    # Initialize the plugin with configured parameters or defaults
     def setup
       @minimum_project_coverage_percentage = 0 unless minimum_project_coverage_percentage
       @minimum_class_coverage_percentage = 0 unless minimum_class_coverage_percentage
+      @minimum_package_coverage_map = {} unless minimum_package_coverage_map
       @minimum_class_coverage_map = {} unless minimum_class_coverage_map
       @files_extension = ['.kt', '.java'] unless files_extension
     end
@@ -44,7 +62,9 @@ module Danger
     # Java => blah/blah/java/slashed_package/Source.java
     # Kotlin => blah/blah/kotlin/slashed_package/Source.kt
     #
-    def report(path, report_url = '', delimiter = %r{\/java\/|\/kotlin\/})
+    def report(path, report_url = '', delimiter = %r{\/java\/|\/kotlin\/}, fail_no_coverage_data_found: true)
+      @fail_no_coverage_data_found = fail_no_coverage_data_found
+
       setup
       classes = classes(delimiter)
 
@@ -54,8 +74,8 @@ module Danger
       total_covered = total_coverage(path)
 
       report_markdown = "### JaCoCO Code Coverage #{total_covered[:covered]}% #{total_covered[:status]}\n"
-      report_markdown << "| Class | Covered | Meta | Status |\n"
-      report_markdown << "|:---|:---:|:---:|:---:|\n"
+      report_markdown += "| Class | Covered | Meta | Status |\n"
+      report_markdown += "|:---|:---:|:---:|:---:|\n"
       class_coverage_above_minimum = markdown_class(parser, report_markdown, report_url)
       markdown(report_markdown)
 
@@ -72,17 +92,42 @@ module Danger
 
     # It returns a specific class code coverage and an emoji status as well
     def report_class(jacoco_class)
-      counter = coverage_counter(jacoco_class)
-      coverage = (counter.covered.fdiv(counter.covered + counter.missed) * 100).floor
-      required_coverage = minimum_class_coverage_map[jacoco_class.name]
-      required_coverage = minimum_class_coverage_percentage if required_coverage.nil?
-      status = coverage_status(coverage, required_coverage)
-
-      {
-        covered: coverage,
-        status: status,
-        required_coverage_percentage: required_coverage
+      report_result = {
+        covered: 'No coverage data found : -',
+        status: ':black_joker:',
+        required_coverage_percentage: 'No coverage data found : -'
       }
+
+      counter = coverage_counter(jacoco_class)
+      unless counter.nil?
+        coverage = (counter.covered.fdiv(counter.covered + counter.missed) * 100).floor
+        required_coverage = minimum_class_coverage_map[jacoco_class.name]
+        required_coverage = package_coverage(jacoco_class.name) if required_coverage.nil?
+        required_coverage = minimum_class_coverage_percentage if required_coverage.nil?
+        status = coverage_status(coverage, required_coverage)
+
+        report_result = {
+          covered: coverage,
+          status: status,
+          required_coverage_percentage: required_coverage
+        }
+      end
+
+      report_result
+    end
+
+    # it returns the most suitable coverage by package name to class or nil
+    def package_coverage(class_name)
+      path = class_name
+      package_parts = class_name.split('/')
+      package_parts.reverse_each do |item|
+        size = item.size
+        path = path[0...-size]
+        coverage = minimum_package_coverage_map[path]
+        path = path[0...-1] unless path.empty?
+        return coverage unless coverage.nil?
+      end
+      nil
     end
 
     # it returns an emoji for coverage status
@@ -117,7 +162,14 @@ module Danger
       branch_counter = counters.detect { |e| e.type.eql? 'BRANCH' }
       line_counter = counters.detect { |e| e.type.eql? 'LINE' }
       counter = branch_counter.nil? ? line_counter : branch_counter
-      raise "No coverage data found for #{jacoco_class.name}" if counter.nil?
+
+      if counter.nil?
+        no_coverage_data_found_message = "No coverage data found for #{jacoco_class.name}"
+
+        raise no_coverage_data_found_message if @fail_no_coverage_data_found.class == TrueClass
+
+        warn no_coverage_data_found_message
+      end
 
       counter
     end
@@ -152,12 +204,11 @@ module Danger
 
     def report_link(class_name, report_url)
       if report_url.empty?
-          "`#{class_name}`"
-      else 
-          report_filepath = class_name.gsub(/\/(?=[^\/]*\/.)/, '.') + ".html"
-          "[`#{class_name}`](#{report_url + report_filepath})"
+        "`#{class_name}`"
+      else
+        report_filepath = class_name.gsub(%r{/(?=[^/]*/.)}, '.') + '.html'
+        "[`#{class_name}`](#{report_url + report_filepath})"
       end
     end
-
   end
 end

@@ -1,5 +1,7 @@
+# frozen_string_literal: true
+
 require 'pathname'
-ROOT = Pathname.new(File.expand_path('../../', __FILE__))
+ROOT = Pathname.new(File.expand_path('..', __dir__))
 $LOAD_PATH.unshift((ROOT + 'lib').to_s)
 $LOAD_PATH.unshift((ROOT + 'spec').to_s)
 
@@ -15,6 +17,8 @@ RSpec.configure do |config|
   config.color = true
   config.tty = true
 end
+
+RSpec::Expectations.configuration.on_potential_false_positives = :nothing
 
 require 'danger_plugin'
 
